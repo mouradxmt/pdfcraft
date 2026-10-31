@@ -1,0 +1,95 @@
+
+name: Deploy PDFCraft WebAssembly
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download latest PDFCraft WebAssembly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          curl -fsSL --retry 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/storytold/pdfcraft/releases/latest \
+            -o release.json
+
+          ASSET_URL="$(jq -er \
+            '[.assets[] | select(.name | startswith("pdfcraft-web-") and endswith(".zip")) | .browser_download_url][0]' \
+            release.json)"
+
+          echo "Downloading: $ASSET_URL"
+          curl -fsSL --retry 3 "$ASSET_URL" -o web.zip
+
+      - name: Prepare website
+        run: |
+          set -euo pipefail
+
+          mkdir -p extracted _site
+          unzip -q web.zip -d extracted
+
+          INDEX="$(find extracted -type f -name index.html -print -quit)"
+
+          if [ -z "$INDEX" ]; then
+            echo "Error: index.html not found"
+            exit 1
+          fi
+
+          ROOT="$(dirname "$INDEX")"
+          cp -a "$ROOT"/. _site/
+
+          if [ ! -f _site/index.html ]; then
+            echo "Error: website missing index.html"
+            exit 1
+          fi
+
+          if [ -z "$(find _site -type f -name '*.wasm' -print -quit)" ]; then
+            echo "Error: WebAssembly files missing"
+            exit 1
+          fi
+
+          touch _site/.nojekyll
+          echo "PDFCraft website prepared"
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload website
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
